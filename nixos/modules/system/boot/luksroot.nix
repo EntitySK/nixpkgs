@@ -3,7 +3,7 @@
 with lib;
 
 let
-  luks2 = config.boot.initrd.luks2;
+  luks = config.boot.initrd.luks;
 
   commonFunctions = ''
     die() {
@@ -141,7 +141,7 @@ let
                     # and try reading it from /dev/console with a timeout
                     IFS= read -t 1 -r passphrase
                     if [ -n "$passphrase" ]; then
-                       ${if luks2.reusePassphrases then ''
+                       ${if luks.reusePassphrases then ''
                          # remember it for the next device
                          echo -n "$passphrase" > /crypt-ramfs/passphrase
                        '' else ''
@@ -156,7 +156,7 @@ let
             echo -n "$passphrase" | ${csopen} --key-file=-
             if [ $? == 0 ]; then
                 echo " - success"
-                ${if luks2.reusePassphrases then ''
+                ${if luks.reusePassphrases then ''
                   # we don't rm here because we might reuse it for the next device
                 '' else ''
                   rm -f /crypt-ramfs/passphrase
@@ -188,7 +188,7 @@ let
     }
 
     open_yubikey_stage() {
-      ${if luks2.yubikeySupport && (yubikey != null) then ''
+      ${if luks.yubikeySupport && (yubikey != null) then ''
       # Yubikey
       rbtohex() { 
         ( od -An -vtx1 | tr -d ' \n' )
@@ -300,9 +300,9 @@ let
     }
 
     open_pgp() {
-      ${if luks2.openpgp.enable && (openpgp != null) then ''
+      ${if luks.openpgp.enable && (openpgp != null) then ''
       # Copy keys to temp dir
-      echo "${luks2.openpgp.publicKeys}" > /openpgp/pubkeys.asc
+      echo "${luks.openpgp.publicKeys}" > /openpgp/pubkeys.asc
       echo "${openpgp.encryptedLUKSKey}" > /openpgp/lukskey.asc
       
       # Export GnuGP environment vars
@@ -351,17 +351,17 @@ let
 
     # Prompt unluck-method menu if openpgp or yubikey is enabled,
     # else skip and open with a raw LUKS key
-    ${if (luks2.openpgp.enable && (openpgp != null)) ||
+    ${if (luks.openpgp.enable && (openpgp != null)) ||
          (luk2.yubikeySupport && (yubikey != null))
     then ''
 
     while [ "$select" != "q" ]; do
       echo "Please select a LUKS unlock method for ${device}:"
       echo "  )  Passphrase/Keyfile (default)"
-      ${if luks2.openpgp.enable && (openpgp != null) then ''
+      ${if luks.openpgp.enable && (openpgp != null) then ''
       echo "  p) OpenPGP Card"
       '' else '' '' }
-      ${if luks2.yubikeySupport && (yubikey != null) then ''
+      ${if luks.yubikeySupport && (yubikey != null) then ''
       echo "  y) Yubikey"
       '' else '' ''}
       
@@ -396,15 +396,15 @@ let
     done
   '';
 
-  preLVM = filterAttrs (n: v: v.preLVM) luks2.devices;
-  postLVM = filterAttrs (n: v: !v.preLVM) luks2.devices;
+  preLVM = filterAttrs (n: v: v.preLVM) luks.devices;
+  postLVM = filterAttrs (n: v: !v.preLVM) luks.devices;
 
 in
 {
 
   options = {
 
-    boot.initrd.luks2.mitigateDMAAttacks = mkOption {
+    boot.initrd.luks.mitigateDMAAttacks = mkOption {
       type = types.bool;
       default = true;
       description = ''
@@ -417,7 +417,7 @@ in
       '';
     };
 
-    boot.initrd.luks2.cryptoModules = mkOption {
+    boot.initrd.luks.cryptoModules = mkOption {
       type = types.listOf types.str;
       default =
         [ "aes" "aes_generic" "blowfish" "twofish"
@@ -431,7 +431,7 @@ in
       '';
     };
 
-    boot.initrd.luks2.forceLuksSupportInInitrd = mkOption {
+    boot.initrd.luks.forceLuksSupportInInitrd = mkOption {
       type = types.bool;
       default = false;
       internal = true;
@@ -441,7 +441,7 @@ in
       '';
     };
 
-    boot.initrd.luks2.reusePassphrases = mkOption {
+    boot.initrd.luks.reusePassphrases = mkOption {
       type = types.bool;
       default = true;
       description = ''
@@ -457,7 +457,7 @@ in
       '';
     };
 
-    boot.initrd.luks2.devices = mkOption {
+    boot.initrd.luks.devices = mkOption {
       default = { };
       example = { "luksroot".device = "/dev/disk/by-uuid/430e9eff-d852-4f68-aa3b-2fa3599ebe08"; };
       description = ''
@@ -665,7 +665,7 @@ in
       }));
     };
 
-    boot.initrd.luks2.openpgp.enable = mkOption {
+    boot.initrd.luks.openpgp.enable = mkOption {
       default = false;
       type = types.bool;
       description = ''
@@ -673,7 +673,7 @@ in
       '';
     };
 
-    boot.initrd.luks2.openpgp.publicKeys = mkOption {
+    boot.initrd.luks.openpgp.publicKeys = mkOption {
       default = "";
       type = types.str;
       description = ''
@@ -681,7 +681,7 @@ in
       '';
     };
 
-    boot.initrd.luks2.yubikeySupport = mkOption {
+    boot.initrd.luks.yubikeySupport = mkOption {
       default = false;
       type = types.bool;
       description = ''
@@ -692,18 +692,18 @@ in
     };
   };
 
-  config = mkIf (luks2.devices != {} || luks2.forceLuksSupportInInitrd) {
+  config = mkIf (luks.devices != {} || luks.forceLuksSupportInInitrd) {
 
     # actually, sbp2 driver is the one enabling the DMA attack, but this needs to be tested
-    boot.blacklistedKernelModules = optionals luks2.mitigateDMAAttacks
+    boot.blacklistedKernelModules = optionals luks.mitigateDMAAttacks
       ["firewire_ohci" "firewire_core" "firewire_sbp2"];
 
     # Some modules that may be needed for mounting anything ciphered
     boot.initrd.availableKernelModules = [ "dm_mod" "dm_crypt" "cryptd" "input_leds" ]
-      ++ luks2.cryptoModules
+      ++ luks.cryptoModules
       # workaround until https://marc.info/?l=linux-crypto-vger&m=148783562211457&w=4 is merged
       # remove once 'modprobe --show-depends xts' shows ecb as a dependency
-      ++ (if builtins.elem "xts" luks2.cryptoModules then ["ecb"] else []);
+      ++ (if builtins.elem "xts" luks.cryptoModules then ["ecb"] else []);
 
     # copy the cryptsetup binary and it's dependencies
     boot.initrd.extraUtilsCommands = ''
@@ -711,11 +711,11 @@ in
       copy_bin_and_libs ${askPass}/bin/cryptsetup-askpass
       sed -i s,/bin/sh,$out/bin/sh, $out/bin/cryptsetup-askpass
 
-      ${optionalString luks2.openpgp.enable ''
+      ${optionalString luks.openpgp.enable ''
         cp -rvd ${pkgs.gnupg} $
       ''}
 
-      ${optionalString luks2.yubikeySupport ''
+      ${optionalString luks.yubikeySupport ''
         copy_bin_and_libs ${pkgs.yubikey-personalization}/bin/ykchalresp
         copy_bin_and_libs ${pkgs.yubikey-personalization}/bin/ykinfo
         copy_bin_and_libs ${pkgs.openssl.bin}/bin/openssl
@@ -738,7 +738,7 @@ in
 
     boot.initrd.extraUtilsCommandsTest = ''
       $out/bin/cryptsetup --version
-      ${optionalString luks2.yubikeySupport ''
+      ${optionalString luks.yubikeySupport ''
         $out/bin/ykchalresp -V
         $out/bin/ykinfo -V
         $out/bin/openssl-wrap version
