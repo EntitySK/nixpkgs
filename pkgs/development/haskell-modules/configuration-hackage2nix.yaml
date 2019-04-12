@@ -3738,6 +3738,7 @@ broken-packages:
   - courier
   - court
   - coverage
+  - coya
   - cparsing
   - CPBrainfuck
   - cpio-conduit
@@ -8040,6 +8041,7 @@ broken-packages:
   - regions-monadstf
   - regions-mtl
   - register-machine-typelevel
+  - registry
   - regress
   - regular
   - regular-extras
@@ -8884,6 +8886,7 @@ broken-packages:
   - SuffixStructures
   - suitable
   - summoner
+  - summoner-tui
   - sump
   - sunlight
   - sunroof-compiler
