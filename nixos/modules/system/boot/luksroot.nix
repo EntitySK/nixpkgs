@@ -3,7 +3,7 @@
 with lib;
 
 let
-  luks = config.boot.initrd.luks;
+  luks2 = config.boot.initrd.luks2;
 
   commonFunctions = ''
     die() {
@@ -87,6 +87,12 @@ let
     mkdir -p /crypt-ramfs
     mount -t ramfs none /crypt-ramfs
 
+    # Select prompt options
+    mkdir -p /select
+
+    # OpenPGP Card temp storage
+    mkdir -p /openpgp
+
     # For Yubikey salt storage
     mkdir -p /crypt-storage
 
@@ -98,11 +104,13 @@ let
 
   postCommands = ''
     stty echo
+    umoumt /select 2>/dev/null
+    umount /openpgp 2>/dev/null
     umount /crypt-storage 2>/dev/null
     umount /crypt-ramfs 2>/dev/null
   '';
 
-  openCommand = name': { name, device, header, keyFile, keyFileSize, keyFileOffset, allowDiscards, yubikey, fallbackToPassword, ... }: assert name' == name;
+  openCommand = name': { name, device, header, keyFile, keyFileSize, keyFileOffset, allowDiscards, openpgp, yubikey, fallbackToPassword, ... }: assert name' == name;
   let
     csopen   = "cryptsetup luksOpen ${device} ${name} ${optionalString allowDiscards "--allow-discards"} ${optionalString (header != null) "--header=${header}"}";
     cschange = "cryptsetup luksChangeKey ${device} ${optionalString (header != null) "--header=${header}"}";
@@ -133,7 +141,7 @@ let
                     # and try reading it from /dev/console with a timeout
                     IFS= read -t 1 -r passphrase
                     if [ -n "$passphrase" ]; then
-                       ${if luks.reusePassphrases then ''
+                       ${if luks2.reusePassphrases then ''
                          # remember it for the next device
                          echo -n "$passphrase" > /crypt-ramfs/passphrase
                        '' else ''
@@ -148,7 +156,7 @@ let
             echo -n "$passphrase" | ${csopen} --key-file=-
             if [ $? == 0 ]; then
                 echo " - success"
-                ${if luks.reusePassphrases then ''
+                ${if luks2.reusePassphrases then ''
                   # we don't rm here because we might reuse it for the next device
                 '' else ''
                   rm -f /crypt-ramfs/passphrase
@@ -179,17 +187,18 @@ let
         ''}
     }
 
-    ${if luks.yubikeySupport && (yubikey != null) then ''
-    # Yubikey
-    rbtohex() {
+    open_yubikey_stage() {
+      ${if luks2.yubikeySupport && (yubikey != null) then ''
+      # Yubikey
+      rbtohex() { 
         ( od -An -vtx1 | tr -d ' \n' )
-    }
+      }
 
-    hextorb() {
+      hextorb() {
         ( tr '[:lower:]' '[:upper:]' | sed -e 's/\([0-9A-F]\{2\}\)/\\\\\\x\1/gI' | xargs printf )
-    }
+      }
 
-    do_open_yubikey() {
+      do_open_yubikey() {
         # Make all of these local to this function
         # to prevent their values being leaked
         local salt
@@ -214,36 +223,36 @@ let
         response="$(ykchalresp -${toString yubikey.slot} -x $challenge 2>/dev/null)"
 
         for try in $(seq 3); do
-            ${optionalString yubikey.twoFactor ''
-            echo -n "Enter two-factor passphrase: "
-            read -r k_user
-            echo
-            ''}
+          ${optionalString yubikey.twoFactor ''
+          echo -n "Enter two-factor passphrase: "
+          read -r k_user
+          echo
+          ''}
 
-            if [ ! -z "$k_user" ]; then
-                k_luks="$(echo -n $k_user | pbkdf2-sha512 ${toString yubikey.keyLength} $iterations $response | rbtohex)"
-            else
-                k_luks="$(echo | pbkdf2-sha512 ${toString yubikey.keyLength} $iterations $response | rbtohex)"
-            fi
+          if [ ! -z "$k_user" ]; then
+            k_luks="$(echo -n $k_user | pbkdf2-sha512 ${toString yubikey.keyLength} $iterations $response | rbtohex)"
+          else
+            k_luks="$(echo | pbkdf2-sha512 ${toString yubikey.keyLength} $iterations $response | rbtohex)"
+          fi
 
-            echo -n "$k_luks" | hextorb | ${csopen} --key-file=-
+          echo -n "$k_luks" | hextorb | ${csopen} --key-file=-
 
-            if [ $? == 0 ]; then
-                opened=true
-                break
-            else
-                opened=false
-                echo "Authentication failed!"
-            fi
+          if [ $? == 0 ]; then
+            opened=true
+            break
+          else
+            opened=false
+            echo "Authentication failed!"
+          fi
         done
 
         [ "$opened" == false ] && die "Maximum authentication errors reached"
 
         echo -n "Gathering entropy for new salt (please enter random keys to generate entropy if this blocks for long)..."
         for i in $(seq ${toString yubikey.saltLength}); do
-            byte="$(dd if=/dev/random bs=1 count=1 2>/dev/null | rbtohex)";
-            new_salt="$new_salt$byte";
-            echo -n .
+          byte="$(dd if=/dev/random bs=1 count=1 2>/dev/null | rbtohex)";
+          new_salt="$new_salt$byte";
+          echo -n .
         done;
         echo "ok"
 
@@ -257,34 +266,113 @@ let
         new_response="$(ykchalresp -${toString yubikey.slot} -x $new_challenge 2>/dev/null)"
 
         if [ ! -z "$k_user" ]; then
-            new_k_luks="$(echo -n $k_user | pbkdf2-sha512 ${toString yubikey.keyLength} $new_iterations $new_response | rbtohex)"
+          new_k_luks="$(echo -n $k_user | pbkdf2-sha512 ${toString yubikey.keyLength} $new_iterations $new_response | rbtohex)"
         else
-            new_k_luks="$(echo | pbkdf2-sha512 ${toString yubikey.keyLength} $new_iterations $new_response | rbtohex)"
+          new_k_luks="$(echo | pbkdf2-sha512 ${toString yubikey.keyLength} $new_iterations $new_response | rbtohex)"
         fi
 
         echo -n "$new_k_luks" | hextorb > /crypt-ramfs/new_key
         echo -n "$k_luks" | hextorb | ${cschange} --key-file=- /crypt-ramfs/new_key
 
         if [ $? == 0 ]; then
-            echo -ne "$new_salt\n$new_iterations" > /crypt-storage${yubikey.storage.path}
+          echo -ne "$new_salt\n$new_iterations" > /crypt-storage${yubikey.storage.path}
         else
-            echo "Warning: Could not update LUKS key, current challenge persists!"
+          echo "Warning: Could not update LUKS key, current challenge persists!"
         fi
 
         rm -f /crypt-ramfs/new_key
         umount /crypt-storage
-    }
+      }
 
-    open_yubikey() {
+      open_yubikey() {
         if wait_yubikey ${toString yubikey.gracePeriod}; then
-            do_open_yubikey
+          do_open_yubikey
         else
-            echo "No yubikey found, falling back to non-yubikey open procedure"
-            open_normally
+          echo "No yubikey found, falling back to non-yubikey open procedure"
+          open_normally
         fi
+      }
+
+      open_yubikey
+      '' else ''
+      open_normally
+      ''}
     }
 
-    open_yubikey
+    open_pgp() {
+      ${if luks2.openpgp.enable && (openpgp != null) then ''
+      # Copy keys to temp dir
+      echo "${luks2.openpgp.publicKeys}" > /openpgp/pubkeys.asc
+      echo "${openpgp.encryptedLUKSKey}" > /openpgp/lukskey.asc
+      
+      # Export GnuGP environment vars
+      export GNUPGHOME=/openpgp/
+      export GPG_TTY=$(tty)
+
+      # cd to `gpg` directory
+      cd ${pkgs.gnupg}/bin
+
+      # Import public keys provided from configuration
+      ./gpg --no-tty --import /openpgp/pubkeys.asc 2> /dev/null
+
+      # Prompt for PIN
+      echo "Have an OpenPGP Card inserted and enter PIN:"
+      # Read inputted pin into $pin
+      pin=
+      while true; do
+        IFS= read -t 1 -r pin
+        if [ -n "$pin" ]; then
+          echo
+          break
+        fi
+      done
+
+      # Detect private keys on card
+      ./gpg --no-tty --card-status > /dev/null
+
+      # Attempt decryption
+      echo "Attempting to decrypt LUKS key..."
+      echo -n $pin | ./gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
+        --output /openpgp/lukskey --decrypt /openpgp/lukskey.asc
+      if [ -f "/openpgp/lukskey" ]
+      then
+        echo "Success!"
+      else
+        echo "Failed. Be careful or you will block the card."
+      fi
+      
+      # Unlock LUKS with the decrypted key
+      echo "Unlocking ${device}..."
+      ${csopen} --key-file=/openpgp/lukskey
+    '' else ''
+    open_normally
+    ''}
+    }
+
+    # Prompt unluck-method menu if openpgp or yubikey is enabled,
+    # else skip and open with a raw LUKS key
+    ${if (luks2.openpgp.enable && (openpgp != null)) ||
+         (luk2.yubikeySupport && (yubikey != null))
+    then ''
+
+    while [ "$select" != "q" ]; do
+      echo "Please select a LUKS unlock method for ${device}:"
+      echo "  )  Passphrase/Keyfile (default)"
+      ${if luks2.openpgp.enable && (openpgp != null) then ''
+      echo "  p) OpenPGP Card"
+      '' else '' '' }
+      ${if luks2.yubikeySupport && (yubikey != null) then ''
+      echo "  y) Yubikey"
+      '' else '' ''}
+      
+      read select
+
+      case $select in
+        'y') echo "Unlocking with Yubikey..."; open_yubikey_stage; break;;
+        'p') echo "Unlocking with OpenPGP Card..."; open_pgp; break;;
+        *) echo "Unlocking normally..."; open_normally; break;;
+      esac
+    done
     '' else ''
     open_normally
     ''}
@@ -308,15 +396,15 @@ let
     done
   '';
 
-  preLVM = filterAttrs (n: v: v.preLVM) luks.devices;
-  postLVM = filterAttrs (n: v: !v.preLVM) luks.devices;
+  preLVM = filterAttrs (n: v: v.preLVM) luks2.devices;
+  postLVM = filterAttrs (n: v: !v.preLVM) luks2.devices;
 
 in
 {
 
   options = {
 
-    boot.initrd.luks.mitigateDMAAttacks = mkOption {
+    boot.initrd.luks2.mitigateDMAAttacks = mkOption {
       type = types.bool;
       default = true;
       description = ''
@@ -329,7 +417,7 @@ in
       '';
     };
 
-    boot.initrd.luks.cryptoModules = mkOption {
+    boot.initrd.luks2.cryptoModules = mkOption {
       type = types.listOf types.str;
       default =
         [ "aes" "aes_generic" "blowfish" "twofish"
@@ -343,7 +431,7 @@ in
       '';
     };
 
-    boot.initrd.luks.forceLuksSupportInInitrd = mkOption {
+    boot.initrd.luks2.forceLuksSupportInInitrd = mkOption {
       type = types.bool;
       default = false;
       internal = true;
@@ -353,7 +441,7 @@ in
       '';
     };
 
-    boot.initrd.luks.reusePassphrases = mkOption {
+    boot.initrd.luks2.reusePassphrases = mkOption {
       type = types.bool;
       default = true;
       description = ''
@@ -369,7 +457,7 @@ in
       '';
     };
 
-    boot.initrd.luks.devices = mkOption {
+    boot.initrd.luks2.devices = mkOption {
       default = { };
       example = { "luksroot".device = "/dev/disk/by-uuid/430e9eff-d852-4f68-aa3b-2fa3599ebe08"; };
       description = ''
@@ -470,6 +558,32 @@ in
             '';
           };
 
+          openpgp = mkOption {
+            default = null;
+            description = ''
+              The options to use for unlocking this LUKS device with an OpenPGP Card.
+              If null (the default), this functionality will be disabled.
+            '';
+            type = with types; nullOr (submodule {
+              options = {
+                publicKey = mkOption {
+                  default = "";
+                  type = types.str;
+                  description = ''
+                    PGP public keys string to import.
+                    Necessary with the smartcard's private key to decrypt the LUKS key.
+                  '';
+                };
+
+                encryptedLUKSKey = mkOption {
+                  default = "";
+                  type = types.str;
+                  description = "PGP-encrypted LUKS password to decrypt and unlock the LUKS device with.";
+                };
+              };
+            });
+          };
+
           yubikey = mkOption {
             default = null;
             description = ''
@@ -551,7 +665,23 @@ in
       }));
     };
 
-    boot.initrd.luks.yubikeySupport = mkOption {
+    boot.initrd.luks2.openpgp.enable = mkOption {
+      default = false;
+      type = types.bool;
+      description = ''
+        Enables support for authenticating with an OpenPGP Card on LUKS devices.
+      '';
+    };
+
+    boot.initrd.luks2.openpgp.publicKeys = mkOption {
+      default = "";
+      type = types.str;
+      description = ''
+        Concatenated string of public keys to 
+      '';
+    };
+
+    boot.initrd.luks2.yubikeySupport = mkOption {
       default = false;
       type = types.bool;
       description = ''
@@ -562,18 +692,18 @@ in
     };
   };
 
-  config = mkIf (luks.devices != {} || luks.forceLuksSupportInInitrd) {
+  config = mkIf (luks2.devices != {} || luks2.forceLuksSupportInInitrd) {
 
     # actually, sbp2 driver is the one enabling the DMA attack, but this needs to be tested
-    boot.blacklistedKernelModules = optionals luks.mitigateDMAAttacks
+    boot.blacklistedKernelModules = optionals luks2.mitigateDMAAttacks
       ["firewire_ohci" "firewire_core" "firewire_sbp2"];
 
     # Some modules that may be needed for mounting anything ciphered
     boot.initrd.availableKernelModules = [ "dm_mod" "dm_crypt" "cryptd" "input_leds" ]
-      ++ luks.cryptoModules
+      ++ luks2.cryptoModules
       # workaround until https://marc.info/?l=linux-crypto-vger&m=148783562211457&w=4 is merged
       # remove once 'modprobe --show-depends xts' shows ecb as a dependency
-      ++ (if builtins.elem "xts" luks.cryptoModules then ["ecb"] else []);
+      ++ (if builtins.elem "xts" luks2.cryptoModules then ["ecb"] else []);
 
     # copy the cryptsetup binary and it's dependencies
     boot.initrd.extraUtilsCommands = ''
@@ -581,7 +711,11 @@ in
       copy_bin_and_libs ${askPass}/bin/cryptsetup-askpass
       sed -i s,/bin/sh,$out/bin/sh, $out/bin/cryptsetup-askpass
 
-      ${optionalString luks.yubikeySupport ''
+      ${optionalString luks2.openpgp.enable ''
+        cp -rvd ${pkgs.gnupg} $
+      ''}
+
+      ${optionalString luks2.yubikeySupport ''
         copy_bin_and_libs ${pkgs.yubikey-personalization}/bin/ykchalresp
         copy_bin_and_libs ${pkgs.yubikey-personalization}/bin/ykinfo
         copy_bin_and_libs ${pkgs.openssl.bin}/bin/openssl
@@ -604,7 +738,7 @@ in
 
     boot.initrd.extraUtilsCommandsTest = ''
       $out/bin/cryptsetup --version
-      ${optionalString luks.yubikeySupport ''
+      ${optionalString luks2.yubikeySupport ''
         $out/bin/ykchalresp -V
         $out/bin/ykinfo -V
         $out/bin/openssl-wrap version
