@@ -87,9 +87,6 @@ let
     mkdir -p /crypt-ramfs
     mount -t ramfs none /crypt-ramfs
 
-    # Select prompt options
-    mkdir -p /select
-
     # OpenPGP Card temp storage
     mkdir -p /openpgp
 
